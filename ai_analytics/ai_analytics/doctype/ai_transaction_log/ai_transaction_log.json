@@ -1,0 +1,113 @@
+{
+ "actions": [],
+ "autoname": "AI-LOG-.#####",
+ "creation": "2026-06-12 15:20:32.723464",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "agent",
+  "status",
+  "section_break_hjpv",
+  "reference_doctype",
+  "reference_name",
+  "section_break_wqfm",
+  "prompt_tokens",
+  "completion_tokens",
+  "total_tokens",
+  "section_break_mabc",
+  "execution_trace"
+ ],
+ "fields": [
+  {
+   "fieldname": "agent",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Operating Agent",
+   "options": "AI Agents",
+   "read_only": 1
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Transaction Status",
+   "options": "\nQueued\nPending\nSuccess\nFlagged\nFailed"
+  },
+  {
+   "fieldname": "section_break_hjpv",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "label": "Reference DocType",
+   "options": "DocType",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Data",
+   "label": "Reference ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_wqfm",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "prompt_tokens",
+   "fieldtype": "Int",
+   "label": "Prompt Tokens",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completion_tokens",
+   "fieldtype": "Int",
+   "label": "Completion Tokens",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_tokens",
+   "fieldtype": "Int",
+   "label": "Total Tokens",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_mabc",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "execution_trace",
+   "fieldtype": "Code",
+   "label": "Execution Trace / Steps",
+   "options": "JSON",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-12 19:23:15.374838",
+ "modified_by": "Administrator",
+ "module": "AI Analytics",
+ "name": "AI Transaction Log",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

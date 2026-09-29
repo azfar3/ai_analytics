@@ -1,0 +1,70 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:tool_name",
+ "creation": "2026-06-12 14:59:36.645883",
+ "description": "e.g., fetch_leave_ledger",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "tool_name",
+  "python_method",
+  "parameters_json",
+  "description"
+ ],
+ "fields": [
+  {
+   "fieldname": "tool_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Tool Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "description": "Full dot notation path (e.g., ai_analytics.ai_core.tools.get_leaves)",
+   "fieldname": "python_method",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Python Method PATH",
+   "reqd": 1
+  },
+  {
+   "description": "Plain English description explaining what this tool does and when the model should call it.",
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "LLM Tool Description"
+  },
+  {
+   "fieldname": "parameters_json",
+   "fieldtype": "Code",
+   "label": "Parameters Json",
+   "options": "JSON"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-13 11:09:35.208566",
+ "modified_by": "Administrator",
+ "module": "AI Analytics",
+ "name": "AI Tool",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

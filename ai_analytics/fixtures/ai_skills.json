@@ -1,0 +1,89 @@
+[
+    {
+        "doctype": "AI Skills",
+        "skill_name": "leave_data_retrieval",
+        "description": "Retrieve employee leave history with filtering, pagination, and caching",
+        "category": "Data Retrieval",
+        "required_tools": [
+            {
+                "tool": "fetch_leave_ledger_fragment"
+            },
+            {
+                "tool": "get_current_date"
+            }
+        ],
+        "input_schema": "{\"type\":\"object\",\"properties\":{\"employee\":{\"type\":\"string\"},\"from_date\":{\"type\":\"string\"},\"lookback_years\":{\"type\":\"integer\"},\"limit\":{\"type\":\"integer\"}},\"required\":[\"employee\"]}",
+        "output_schema": "{\"type\":\"object\",\"properties\":{\"leaves\":{\"type\":\"array\"},\"holidays\":{\"type\":\"array\"},\"count\":{\"type\":\"integer\"}},\"required\":[\"leaves\"]}",
+        "is_async": 0,
+        "execution_order": 10,
+        "name": "leave_data_retrieval"
+    },
+    {
+        "doctype": "AI Skills",
+        "skill_name": "feature_engineering",
+        "description": "Compute statistical features from leave data: bridge leaves, clusters, frequency, duration, type misuse",
+        "category": "Feature Engineering",
+        "required_tools": [
+            {
+                "tool": "compute_leave_features"
+            }
+        ],
+        "input_schema": "{\"type\":\"object\",\"properties\":{\"employee\":{\"type\":\"string\"},\"from_date\":{\"type\":\"string\"}},\"required\":[\"employee\"]}",
+        "output_schema": "{\"type\":\"object\",\"properties\":{\"features\":{\"type\":\"object\"}},\"required\":[\"features\"]}",
+        "is_async": 0,
+        "execution_order": 20,
+        "name": "feature_engineering"
+    },
+    {
+        "doctype": "AI Skills",
+        "skill_name": "pattern_detection",
+        "description": "Detect anomalous patterns: bridge leaves, clusters, high frequency, short duration manipulation",
+        "category": "Pattern Detection",
+        "required_tools": [],
+        "input_schema": "{\"type\":\"object\",\"properties\":{\"features\":{\"type\":\"object\"},\"leaves\":{\"type\":\"array\"}},\"required\":[\"features\"]}",
+        "output_schema": "{\"type\":\"object\",\"properties\":{\"patterns\":{\"type\":\"array\"},\"severity\":{\"type\":\"string\"}},\"required\":[\"patterns\"]}",
+        "is_async": 0,
+        "execution_order": 30,
+        "name": "pattern_detection"
+    },
+    {
+        "doctype": "AI Skills",
+        "skill_name": "risk_scoring",
+        "description": "Calculate risk score (0-100) and classification band based on detected patterns",
+        "category": "Risk Scoring",
+        "required_tools": [],
+        "input_schema": "{\"type\":\"object\",\"properties\":{\"patterns\":{\"type\":\"array\"},\"features\":{\"type\":\"object\"}},\"required\":[\"patterns\",\"features\"]}",
+        "output_schema": "{\"type\":\"object\",\"properties\":{\"risk_score\":{\"type\":\"integer\"},\"risk_band\":{\"type\":\"string\"},\"confidence\":{\"type\":\"number\"}},\"required\":[\"risk_score\",\"risk_band\"]}",
+        "is_async": 0,
+        "execution_order": 40,
+        "name": "risk_scoring"
+    },
+    {
+        "doctype": "AI Skills",
+        "skill_name": "report_generation",
+        "description": "Generate structured verdict report with explanation and recommendations",
+        "category": "Report Generation",
+        "required_tools": [],
+        "input_schema": "{\"type\":\"object\",\"properties\":{\"risk_score\":{\"type\":\"integer\"},\"risk_band\":{\"type\":\"string\"},\"patterns\":{\"type\":\"array\"},\"features\":{\"type\":\"object\"}},\"required\":[\"risk_score\",\"risk_band\"]}",
+        "output_schema": "{\"type\":\"object\",\"properties\":{\"verdict\":{\"type\":\"string\"},\"ai_summary\":{\"type\":\"string\"},\"ai_rule_flags\":{\"type\":\"array\"},\"key_number\":{\"type\":\"integer\"}},\"required\":[\"verdict\",\"ai_summary\"]}",
+        "is_async": 0,
+        "execution_order": 50,
+        "name": "report_generation"
+    },
+    {
+        "doctype": "AI Skills",
+        "skill_name": "verdict_persistence",
+        "description": "Write AI verdict back to the Leave Application document",
+        "category": "Persistence",
+        "required_tools": [
+            {
+                "tool": "update_leave_verdict"
+            }
+        ],
+        "input_schema": "{\"type\":\"object\",\"properties\":{\"leave_name\":{\"type\":\"string\"},\"verdict\":{\"type\":\"object\"}},\"required\":[\"leave_name\",\"verdict\"]}",
+        "output_schema": "{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\"},\"message\":{\"type\":\"string\"}},\"required\":[\"status\"]}",
+        "is_async": 0,
+        "execution_order": 60,
+        "name": "verdict_persistence"
+    }
+]

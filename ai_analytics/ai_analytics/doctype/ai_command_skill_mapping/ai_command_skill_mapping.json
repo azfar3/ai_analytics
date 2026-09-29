@@ -1,0 +1,40 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-06-13 12:42:50.499016",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "skill",
+  "execution_order"
+ ],
+ "fields": [
+  {
+   "fieldname": "skill",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Skill",
+   "options": "AI Skills",
+   "reqd": 1
+  },
+  {
+   "default": "10",
+   "fieldname": "execution_order",
+   "fieldtype": "Int",
+   "label": "Execution Order"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-06-13 12:46:05.776759",
+ "modified_by": "Administrator",
+ "module": "AI Analytics",
+ "name": "AI Command Skill Mapping",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

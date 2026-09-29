@@ -1,0 +1,100 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:skill_name",
+ "creation": "2026-06-13 12:25:08.616910",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "skill_name",
+  "description",
+  "category",
+  "execution_config",
+  "required_tools",
+  "input_schema",
+  "output_schema",
+  "is_async",
+  "execution_order"
+ ],
+ "fields": [
+  {
+   "fieldname": "skill_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Skill Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Text",
+   "label": "Description",
+   "reqd": 1
+  },
+  {
+   "fieldname": "category",
+   "fieldtype": "Select",
+   "label": "Category",
+   "options": "\nData Retrieval\nFeature Engineering\nPattern Detection\nRisk Scoring\nReport Generation\nPersistence\nUtility"
+  },
+  {
+   "fieldname": "execution_config",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "input_schema",
+   "fieldtype": "Code",
+   "label": "Input JSON Schema",
+   "options": "JSON"
+  },
+  {
+   "fieldname": "output_schema",
+   "fieldtype": "Code",
+   "label": "Output JSON Schema",
+   "options": "JSON"
+  },
+  {
+   "default": "1",
+   "fieldname": "is_async",
+   "fieldtype": "Check",
+   "label": "Run Asynchronously"
+  },
+  {
+   "default": "10",
+   "fieldname": "execution_order",
+   "fieldtype": "Int",
+   "label": "Execution Order"
+  },
+  {
+   "fieldname": "required_tools",
+   "fieldtype": "Table",
+   "label": "Required Tools",
+   "options": "AI Skill Tool Mapping"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-13 15:56:50.048647",
+ "modified_by": "Administrator",
+ "module": "AI Analytics",
+ "name": "AI Skills",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

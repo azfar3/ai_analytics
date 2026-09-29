@@ -1,0 +1,93 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:command_name",
+ "creation": "2026-06-13 12:36:29.819897",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "command_name",
+  "description",
+  "trigger_pattern",
+  "workflow_config",
+  "required_skills",
+  "confirmation_required",
+  "max_execution_time",
+  "enabled"
+ ],
+ "fields": [
+  {
+   "fieldname": "command_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Command Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Text",
+   "label": "Description",
+   "reqd": 1
+  },
+  {
+   "description": "Regex pattern to auto-detect this command from user input",
+   "fieldname": "trigger_pattern",
+   "fieldtype": "Data",
+   "label": "Trigger Pattern (Regex)"
+  },
+  {
+   "fieldname": "workflow_config",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "required_skills",
+   "fieldtype": "Table",
+   "label": "Required Skills",
+   "options": "AI Command Skill Mapping"
+  },
+  {
+   "default": "0",
+   "fieldname": "confirmation_required",
+   "fieldtype": "Check",
+   "label": "Requires Human Confirmation"
+  },
+  {
+   "default": "300",
+   "fieldname": "max_execution_time",
+   "fieldtype": "Int",
+   "label": "Max Execution Time (seconds)"
+  },
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-13 12:48:07.008554",
+ "modified_by": "Administrator",
+ "module": "AI Analytics",
+ "name": "AI Commands",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

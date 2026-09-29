@@ -1,0 +1,90 @@
+[
+    {
+        "doctype": "AI Commands",
+        "command_name": "analyze_single",
+        "description": "Analyze a single leave application for anomalies and generate risk assessment",
+        "trigger_pattern": "analyze.*leave|check.*leave|review.*leave",
+        "required_skills": [
+            {
+                "skill": "leave_data_retrieval",
+                "execution_order": 10
+            },
+            {
+                "skill": "feature_engineering",
+                "execution_order": 20
+            },
+            {
+                "skill": "pattern_detection",
+                "execution_order": 30
+            },
+            {
+                "skill": "risk_scoring",
+                "execution_order": 40
+            },
+            {
+                "skill": "report_generation",
+                "execution_order": 50
+            },
+            {
+                "skill": "verdict_persistence",
+                "execution_order": 60
+            }
+        ],
+        "confirmation_required": 0,
+        "max_execution_time": 300,
+        "enabled": 1,
+        "name": "analyze_single"
+    },
+    {
+        "doctype": "AI Commands",
+        "command_name": "analyze_employee_history",
+        "description": "Perform comprehensive audit of employee's complete leave history",
+        "trigger_pattern": "audit.*employee|history.*leave|full.*analysis",
+        "required_skills": [
+            {
+                "skill": "leave_data_retrieval",
+                "execution_order": 10
+            },
+            {
+                "skill": "feature_engineering",
+                "execution_order": 20
+            },
+            {
+                "skill": "pattern_detection",
+                "execution_order": 30
+            },
+            {
+                "skill": "risk_scoring",
+                "execution_order": 40
+            },
+            {
+                "skill": "report_generation",
+                "execution_order": 50
+            }
+        ],
+        "confirmation_required": 0,
+        "max_execution_time": 600,
+        "enabled": 1,
+        "name": "analyze_employee_history"
+    },
+    {
+        "doctype": "AI Commands",
+        "command_name": "explain_verdict",
+        "description": "Generate human-readable explanation of a previous AI verdict",
+        "trigger_pattern": "explain.*verdict|why.*flagged|understand.*decision",
+        "required_skills": [
+            {
+                "skill": "leave_data_retrieval",
+                "execution_order": 10
+            },
+            {
+                "skill": "report_generation",
+                "execution_order": 20
+            }
+        ],
+        "confirmation_required": 0,
+        "max_execution_time": 120,
+        "enabled": 1,
+        "name": "explain_verdict"
+    }
+]

@@ -122,24 +122,101 @@ app_license = "mit"
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events = {
+    "Leave Application": {
+        "after_insert": "ai_analytics.ai_core.tasks.leave_application",
+    },
+    # "Employee Expense Claim": {
+    #     "on_update": "ai_analytics.ai_core.tasks.expense_claim",
+    # },
+    # "Beneficiary Master": {
+    #     "on_submit": "ai_analytics.ai_core.tasks.beneficiary_master",
+    # },
+}
+
+fixtures = [
+    {
+        "dt": "AI Agents",
+        "filters": [
+            [
+                "name",
+                "in",
+                [
+                    "leave_anomaly_detector",
+                    "expense_claim_verifier",
+                    "pdf_data_extractor",
+                ],
+            ]
+        ],
+    },
+    {
+        "dt": "AI Tool",
+        "filters": [
+            [
+                "name",
+                "in",
+                [
+                    "fetch_leave_ledger_fragment",
+                    "compute_leave_features",
+                    "update_leave_verdict",
+                    "fetch_expense_claim_structure",
+                    "fetch_extracted_invoice_data",
+                    "compute_expense_variance",
+                    "update_expense_verdict",
+                    "extract_pdf_images",
+                    "parse_extracted_json",
+                    "insert_beneficiary_from_extraction",
+                    "get_current_date",
+                    "search_frappe_records",
+                ],
+            ]
+        ],
+    },
+    {
+        "dt": "AI Skills",
+        "filters": [
+            [
+                "name",
+                "in",
+                [
+                    "leave_data_retrieval",
+                    "feature_engineering",
+                    "pattern_detection",
+                    "risk_scoring",
+                    "report_generation",
+                    "verdict_persistence",
+                ],
+            ]
+        ],
+    },
+    {
+        "dt": "AI Commands",
+        "filters": [
+            [
+                "name",
+                "in",
+                [
+                    "analyze_single",
+                    "analyze_employee_history",
+                    "explain_verdict",
+                ],
+            ]
+        ],
+    },
+    "AI Keys",
+    "AI Transaction Log",
+    "AI Session",
+]
+
 
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-# 	"all": [
-# 		"ai_analytics.tasks.all"
-# 	],
-# 	"daily": [
-# 		"ai_analytics.tasks.daily"
-# 	],
+scheduler_events = {
+	"daily": [
+		"ai_analytics.ai_core.tasks.renew_ai_keys"
+	]
+}
 # 	"hourly": [
 # 		"ai_analytics.tasks.hourly"
 # 	],
@@ -226,4 +303,3 @@ app_license = "mit"
 # default_log_clearing_doctypes = {
 # 	"Logging DocType Name": 30  # days to retain logs
 # }
-
