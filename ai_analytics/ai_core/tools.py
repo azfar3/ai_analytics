@@ -15,7 +15,12 @@ def extract_pdf_images(
     file_url: str, max_pages: int = 2, dpi_scale: float = 2.0
 ) -> str:
     try:
-        file_doc = frappe.get_doc("File", {"file_url": file_url})
+        file_name = frappe.db.get_value("File", {"file_url": file_url}, "name")
+        if not file_name:
+            return json.dumps(
+                {"status": "error", "message": f"File resolve error: File {file_url} not found"}
+            )
+        file_doc = frappe.get_doc("File", file_name)
         file_path = file_doc.get_full_path()
     except Exception as e:
         return json.dumps(

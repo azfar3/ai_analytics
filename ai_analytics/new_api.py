@@ -1,3 +1,4 @@
+import os
 import io
 import re
 import json
@@ -420,7 +421,8 @@ class AIGateway:
 
                 if not parsed_content:
                     self._update_key_status(key_name, "In Waiting")
-                    self.logger.warning(f"Key {idx+1}: JSON extraction failed")
+                    self.logger.warning(f"Key {idx+1}: JSON extraction failed. Raw content: {raw_content}")
+                    frappe.log_error(f"JSON Parsing Failed. Raw: {raw_content}", "LLM Parsing Error")
                     continue
 
                 self._update_key_status(key_name, "Active", increment_count=True)
@@ -1398,47 +1400,7 @@ class FinanceAnalyzer(BaseAnalyzer):
         return orders, active_dates, invoices
 
 
-class UniversalAttachmentProcessor:
-    @staticmethod
-    def process_attachments(
-        file_urls: List[str], max_pages_per_pdf: Optional[int] = None
-    ) -> List[str]:
-        """
-        Converts attached PDFs and raw images (PNG, JPG, JPEG) into compressed Base64 Vision images.
-        Compresses images to max 900px width/height (JPEG quality=70) to optimize vision tokens.
-        """
-        images = []
-        for url in file_urls:
-            if not url:
-                continue
-            try:
-                file_doc = frappe.get_doc("File", {"file_url": url})
-                file_path = file_doc.get_full_path()
-
-                with open(file_path, "rb") as f:
-                    content = f.read()
-
-                ext = (file_doc.file_name or "").lower()
-                if ext.endswith(".pdf"):
-                    rendered = ImageProcessor.process_pdf_pages(
-                        content, max_pages=max_pages_per_pdf
-                    )
-                    images.extend(rendered)
-                elif ext.endswith((".png", ".jpg", ".jpeg", ".webp")):
-                    img = Image.open(io.BytesIO(content))
-                    if img.mode != "RGB":
-                        img = img.convert("RGB")
-                    img.thumbnail((900, 900), Image.Resampling.LANCZOS)
-                    buffer = io.BytesIO()
-                    img.save(buffer, format="JPEG", quality=70)
-                    b64_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
-                    images.append(f"data:image/jpeg;base64,{b64_str}")
-            except Exception as e:
-                get_logger("UniversalAttachmentProcessor").error(
-                    f"Failed to process attachment {url}: {e}"
-                )
-
-        return images
+from ai_analytics.attachment_processor import UniversalAttachmentProcessor
 
 
 class ExpenseAnalyzer(BaseAnalyzer):
@@ -1447,6 +1409,7 @@ class ExpenseAnalyzer(BaseAnalyzer):
         return self.analyze_expense_claim(name)
 
     def analyze_expense_claim(self, name: str) -> Dict:
+        exp = None
         try:
             print(
                 "\n=================== [AI ANALYTICS - EXPENSE CLAIM AUDIT] ==================="
@@ -1461,105 +1424,406 @@ class ExpenseAnalyzer(BaseAnalyzer):
             if hasattr(exp, "ai_audit_status"):
                 exp.db_set("ai_audit_status", "In Progress")
 
-            # 1. Deterministic Python Zero-Token SOP Pre-Checker
-            pre_check_results = self._run_zero_token_pre_check(exp)
-            print(
-                f"[DEBUG EXPENSE] Zero-Token Pre-Check Completed | Violations: {len(pre_check_results.get('violations', []))} | Warnings: {len(pre_check_results.get('warnings', []))}"
+            # 1. Collect Attachments
+            file_urls = []
+            file_docs = frappe.get_all(
+                "File",
+                filters={
+                    "attached_to_doctype": "Employee Expense Claim",
+                    "attached_to_name": exp.name,
+                },
+                fields=["file_url", "file_name"]
             )
+            for f in file_docs:
+                if f.get("file_url"):
+                    file_urls.append({"url": f.get("file_url"), "name": f.get("file_name"), "source": "Main Form"})
 
-            # 2. Collect All Attachments (Tickets, Fuel Bills, Toll Receipts, Odometer photos)
-            attachment_urls = self._collect_attachment_urls(exp)
-            print(
-                f"[DEBUG EXPENSE] Attachment Collection | Found {len(attachment_urls)} file attachments."
-            )
+            if hasattr(exp, "travel_documents"):
+                for d in getattr(exp, "travel_documents", None) or []:
+                    file_url = getattr(d, "file", getattr(d, "file_url", getattr(d, "attachment", None)))
+                    doc_type = getattr(d, "document", getattr(d, "document_type", ""))
+                    comments = getattr(d, "comments", getattr(d, "description", ""))
+                    if file_url:
+                        file_urls.append({
+                            "url": file_url, 
+                            "explicit_type": f"{str(doc_type).lower()} {str(comments).lower()}"
+                        })
+                        
+            if hasattr(exp, "supporting_bills"):
+                for d in getattr(exp, "supporting_bills", None) or []:
+                    file_url = getattr(d, "file", getattr(d, "file_url", getattr(d, "attachment", None)))
+                    doc_type = getattr(d, "document", getattr(d, "document_type", getattr(d, "type", "")))
+                    comments = getattr(d, "comments", getattr(d, "description", ""))
+                    if file_url:
+                        file_urls.append({
+                            "url": file_url, 
+                            "explicit_type": f"{str(doc_type).lower()} {str(comments).lower()}"
+                        })
 
-            # 3. Process attachments into compressed base64 images
-            images = UniversalAttachmentProcessor.process_attachments(attachment_urls)
-            print(
-                f"[DEBUG EXPENSE] Image Rendering | Rendered & Compressed {len(images)} vision payload images."
-            )
+            print(f"[DEBUG EXPENSE] Attachment Collection | Found {len(file_urls)} total file attachments.")
 
+            # 2. Process attachments into content-aware structured evidence + compressed base64 images (if needed)
+            attachment_result = UniversalAttachmentProcessor.process_attachments(file_urls)
+            images = attachment_result["images_for_vision"]
+            structured_evidence = attachment_result["structured_evidence"]
+            
+            print(f"[DEBUG EXPENSE] Content-Aware Extraction | Extracted {len(structured_evidence)} structured evidence items. Required {len(images)} vision payload images.")
+
+            # Phase 1: Evidence Completeness Gate
+            from ai_analytics.expense_validator import ExpenseValidator
+            
             # 4. Multi-Batch Map-Reduce Processing (Handling 5-Image Limit)
             batch_size = 4
             image_batches = [
                 images[i : i + batch_size] for i in range(0, len(images), batch_size)
             ]
-            print(
-                f"[DEBUG EXPENSE] Batch Chunking | Total Batches to Process: {len(image_batches)} (Batch Size: {batch_size})"
-            )
+            if image_batches:
+                print(f"[DEBUG EXPENSE] Batch Chunking | Total Batches to Process: {len(image_batches)} (Batch Size: {batch_size})")
 
-            extracted_receipts = []
+            extracted_items = []
             total_tokens = 0
 
             for idx, batch in enumerate(image_batches, 1):
-                print(
-                    f"[DEBUG EXPENSE] Executing Vision Batch #{idx}/{len(image_batches)} (Count: {len(batch)} images)..."
-                )
+                print(f"[DEBUG EXPENSE] Executing Vision Batch #{idx}/{len(image_batches)} (Count: {len(batch)} images)...")
                 mini_prompt = (
-                    "Extract structured raw details from receipt/document images: "
-                    "receipt_type (Ticket, Fuel, Toll, Hotel, Other), vendor_name, date, total_amount, odometer_km. "
-                    "Return a JSON object with key 'receipts': [{receipt_type, vendor_name, date, total_amount, odometer_km}]."
+                    "Analyze each provided document or evidence image carefully. "
+                    "IMPORTANT: You MUST return exactly one object in the 'items' array for EACH image provided, in the exact same order.\n"
+                    "Categorize each image into one of:\n"
+                    "- 'START_ODOMETER': Photo of vehicle dashboard/speedometer at trip start / initial reading.\n"
+                    "- 'END_ODOMETER': Photo of vehicle dashboard/speedometer at trip end / final reading.\n"
+                    "- 'ODOMETER': General vehicle dashboard/speedometer showing kilometers/mileage.\n"
+                    "- 'VEHICLE_PHOTO': Exterior photo of vehicle (car, motorcycle, van, etc.) showing vehicle or registration plate.\n"
+                    "- 'RECEIPT': Fuel slip, toll ticket, fare ticket, invoice, hotel bill.\n"
+                    "- 'OTHER': Any other document/page.\n\n"
+                    "Fields for each object:\n"
+                    "{\n"
+                    "  'category': 'START_ODOMETER' | 'END_ODOMETER' | 'ODOMETER' | 'VEHICLE_PHOTO' | 'RECEIPT' | 'OTHER',\n"
+                    "  'odometer_reading': <numeric kilometer reading from meter dial, or null>,\n"
+                    "  'vehicle_type': <e.g. 'Sedan', 'Motorcycle', 'Van' or null>,\n"
+                    "  'license_plate': <visible registration number or null>,\n"
+                    "  'receipt_type': 'Ticket' | 'Fuel' | 'Toll' | 'Hotel' | 'Invoice' | null,\n"
+                    "  'vendor_name': <string or null>,\n"
+                    "  'date': <string or null>,\n"
+                    "  'total_amount': <number or null>\n"
+                    "}\n"
+                    "Return strict JSON with key 'items': [...]"
                 )
+                
+                # Pass just the base64 strings to the model
+                images_only = [img_dict["image_data"] for img_dict in batch]
+                
                 res = self.gateway.call(
                     prompt=mini_prompt,
                     model=AIConfig.DEFAULT_VISION_MODEL,
-                    images=batch,
+                    images=images_only,
                     temperature=0.1,
                 )
+                
                 if res.success and isinstance(res.content, dict):
-                    receipt_list = res.content.get("receipts", [])
-                    if isinstance(receipt_list, list):
-                        extracted_receipts.extend(receipt_list)
-                        print(
-                            f"[DEBUG EXPENSE] Vision Batch #{idx} Success | Extracted {len(receipt_list)} receipts | Tokens: {res.tokens_used}"
-                        )
+                    item_list = res.content.get("items", res.content.get("receipts", []))
+                    if isinstance(item_list, list):
+                        # Ensure lengths match
+                        if len(item_list) < len(batch):
+                            item_list.extend([{} for _ in range(len(batch) - len(item_list))])
+                        elif len(item_list) > len(batch):
+                            item_list = item_list[:len(batch)]
+                            
+                        for i, r in enumerate(item_list):
+                            if r and any(r.values()):
+                                r["_source_url"] = batch[i]["url"]
+                                r["_source_page"] = batch[i].get("page", 1)
+                                r["_source_index"] = batch[i].get("image_index", 1)
+                                r["_doc_type"] = batch[i].get("doc_type", "")
+                                extracted_items.append(r)
+                                
+                        print(f"[DEBUG EXPENSE] Vision Batch #{idx} Success | Tokens: {res.tokens_used}")
                 else:
-                    print(
-                        f"[DEBUG EXPENSE ERROR] Vision Batch #{idx} Failed: {res.error}"
-                    )
+                    print(f"[DEBUG EXPENSE ERROR] Vision Batch #{idx} Failed: {res.error}")
                 total_tokens += getattr(res, "tokens_used", 0)
 
-            # 5. Synthesize Final LLM Prompt (Text Mode Reduce)
+            # Merge vision extractions into structured_evidence
+            if extracted_items:
+                odometer_readings = []
+                vehicle_photos = []
+
+                for r in extracted_items:
+                    source_url = r.get("_source_url", "Vision API")
+                    source_page = r.get("_source_page", 1)
+                    source_idx = r.get("_source_index", 1)
+                    source_ref = f"{source_url}#img{source_idx}" if source_idx > 1 else f"{source_url}/page:{source_page}"
+                    cat = str(r.get("category", "")).upper()
+                    
+                    existing_ev = next((ev for ev in structured_evidence if ev.get("source_attachment") == source_url), None)
+                    fields_to_add = []
+                    
+                    # 1. Vehicle Photo
+                    if cat == "VEHICLE_PHOTO" or r.get("vehicle_type") or r.get("license_plate"):
+                        veh_info = {
+                            "vehicle_type": r.get("vehicle_type"),
+                            "license_plate": r.get("license_plate")
+                        }
+                        vehicle_photos.append(veh_info)
+                        fields_to_add.append({
+                            "field": "vehicle_photo",
+                            "value": veh_info,
+                            "status": "VERIFIED",
+                            "source": source_ref
+                        })
+                        if r.get("license_plate"):
+                            fields_to_add.append({
+                                "field": "license_plate",
+                                "value": r.get("license_plate"),
+                                "status": "VERIFIED",
+                                "source": source_ref
+                            })
+
+                    # 2. Odometer Readings from Vision Dial
+                    odom_val = r.get("odometer_reading") or r.get("odometer_km")
+                    if odom_val:
+                        try:
+                            # clean string if needed
+                            if isinstance(odom_val, str):
+                                odom_val = re.sub(r'[^\d.]', '', odom_val)
+                            odom_val = float(odom_val)
+                            odometer_readings.append({
+                                "value": odom_val,
+                                "category": cat,
+                                "source_ref": source_ref,
+                                "source_url": source_url
+                            })
+                        except Exception:
+                            pass
+                        
+                    # 3. Financial Receipts & Invoices
+                    if r.get("total_amount"):
+                        fields_to_add.append({"field": "amount", "value": r.get("total_amount"), "status": "EXTRACTED", "source": source_ref})
+                    if r.get("date"):
+                        fields_to_add.append({"field": "date", "value": r.get("date"), "status": "EXTRACTED", "source": source_ref})
+                    if r.get("vendor_name"):
+                        fields_to_add.append({"field": "vendor", "value": r.get("vendor_name"), "status": "EXTRACTED", "source": source_ref})
+                        
+                    if existing_ev:
+                        existing_ev.setdefault("extracted_fields", []).extend(fields_to_add)
+                        if existing_ev.get("extraction_status") != "EXTRACTED":
+                            existing_ev["extraction_status"] = "EXTRACTED"
+                    else:
+                        structured_evidence.append({
+                            "document_type": "VISION_EXTRACTION",
+                            "extraction_status": "EXTRACTED",
+                            "source_attachment": source_url,
+                            "extracted_text_content": "",
+                            "extracted_fields": fields_to_add
+                        })
+
+                # Resolve start and end odometer from visual readings
+                if odometer_readings:
+                    start_reading = next((o for o in odometer_readings if o["category"] == "START_ODOMETER"), None)
+                    end_reading = next((o for o in odometer_readings if o["category"] == "END_ODOMETER"), None)
+                    
+                    # If not explicitly marked as START/END, sort numerically
+                    if not start_reading or not end_reading:
+                        sorted_readings = sorted(odometer_readings, key=lambda x: x["value"])
+                        if len(sorted_readings) >= 2:
+                            if not start_reading: start_reading = sorted_readings[0]
+                            if not end_reading: end_reading = sorted_readings[-1]
+                        elif len(sorted_readings) == 1:
+                            if not start_reading: start_reading = sorted_readings[0]
+
+                    # Target TRAVEL_REPORT evidence if present, otherwise first evidence
+                    target_ev = next((ev for ev in structured_evidence if ev.get("document_type") == "TRAVEL_REPORT"), None)
+                    if not target_ev and structured_evidence:
+                        target_ev = structured_evidence[0]
+                        
+                    if target_ev and start_reading:
+                        target_ev.setdefault("extracted_fields", [])
+                        # Mark text field if it already existed
+                        existing_start = next((f for f in target_ev["extracted_fields"] if f["field"] == "start_odometer"), None)
+                        if existing_start:
+                            existing_start["field"] = "start_odometer_text"
+                        # Set image-verified start odometer
+                        target_ev["extracted_fields"].append({
+                            "field": "start_odometer",
+                            "value": start_reading["value"],
+                            "status": "VERIFIED",
+                            "source": start_reading["source_ref"]
+                        })
+                        target_ev["extracted_fields"].append({
+                            "field": "start_odometer_image",
+                            "value": start_reading["value"],
+                            "status": "VERIFIED",
+                            "source": start_reading["source_ref"]
+                        })
+
+                    if target_ev and end_reading:
+                        target_ev.setdefault("extracted_fields", [])
+                        existing_end = next((f for f in target_ev["extracted_fields"] if f["field"] == "end_odometer"), None)
+                        if existing_end:
+                            existing_end["field"] = "end_odometer_text"
+                        # Set image-verified end odometer
+                        target_ev["extracted_fields"].append({
+                            "field": "end_odometer",
+                            "value": end_reading["value"],
+                            "status": "VERIFIED",
+                            "source": end_reading["source_ref"]
+                        })
+                        target_ev["extracted_fields"].append({
+                            "field": "end_odometer_image",
+                            "value": end_reading["value"],
+                            "status": "VERIFIED",
+                            "source": end_reading["source_ref"]
+                        })
+
+                    # If vehicle photo found, also link to target_ev
+                    if target_ev and vehicle_photos:
+                        target_ev.setdefault("extracted_fields", []).append({
+                            "field": "vehicle_photo",
+                            "value": vehicle_photos[0],
+                            "status": "VERIFIED",
+                            "source": "Vision Extraction"
+                        })
+
+            validator = ExpenseValidator(name, structured_evidence=structured_evidence)
+            validation_result = validator.validate()
+            
+            missing_items = validation_result.get("missing", [])
+            if missing_items:
+                print(f"[DEBUG EXPENSE] Completeness Gate: Identified {len(missing_items)} missing requirement(s). Continuing audit across all phases without stopping.")
+            else:
+                print("[DEBUG EXPENSE] Completeness Gate Passed: All required evidence present. Proceeding to Deterministic Audit...")
+
+            # Phase 2: Deterministic Audit Engine
+            from ai_analytics.deterministic_audit import DeterministicAuditEngine
+            audit_engine = DeterministicAuditEngine(name, validator)
+            audit_result = audit_engine.run_audit()
+            
+            print(f"[DEBUG EXPENSE] Deterministic Audit Completed | Findings: {len(audit_result['findings'])} | Score: {audit_result['scoring']['final_score']}")
+
+            # Calculate and save individual document scores in child table 'travel_documents'
+            doc_scores = self._calculate_and_save_document_scores(
+                exp=exp,
+                structured_evidence=structured_evidence,
+                validator=validator,
+                audit_result=audit_result,
+            )
+
+            # 5. Build Phase 4 Minimal AuditFactSheet
+            ambiguities = [
+                field for f in structured_evidence 
+                for field in f.get('extracted_fields', []) 
+                if field.get('status') == 'AMBIGUOUS'
+            ]
+            
+            fact_sheet = {
+                "claim": audit_result["fact_sheet"].get("claim"),
+                "evidence_matrix": validator.evidence_matrix,
+                "missing_evidence": validation_result.get("missing", []),
+                "present_evidence": [
+                    {
+                        "document_type": e.get("document_type"),
+                        "url": e.get("source_attachment", ""),
+                        "status": e.get("extraction_status"),
+                        "fields": [
+                            {
+                                "field": f.get("field"),
+                                "value": f.get("value"),
+                                "status": f.get("status")
+                            }
+                            for f in e.get("extracted_fields", [])
+                        ]
+                    }
+                    for e in structured_evidence
+                ],
+                "document_scores": doc_scores,
+                "deterministic_findings": audit_result["findings"],
+                "ambiguities": ambiguities,
+                "scoring": audit_result["scoring"],
+                "policy_context": [
+                    "Rule: Single day trips do not qualify for DSA.",
+                    "Rule: Personal vehicle claims require Travel Report with start/end odometer readings and vehicle photo.",
+                    "Rule: Physical odometer dashboard photos must support the claimed distance.",
+                    "Rule: Claimed KM must not exceed supported Odometer KM."
+                ]
+            }
+
+            if structured_evidence:
+                fact_sheet["extracted_document_text"] = [
+                    {
+                        "document_type": e["document_type"],
+                        "url": e.get("source_attachment", e.get("url", "")),
+                        "raw_text": e.get("extracted_text_content", "No text extracted")
+                    } for e in structured_evidence
+                ]
+
+            # The AI is always required to cross-verify the extracted evidence (vendor amounts, travel dates) against the claim.
+            # The deterministic layer (Phase 1 and 2) only ensured the files existed and checked basic logic.
+            # Phase 4 (AI Synthesis) is the final auditor.
+            llm_required = True
+
+            audit_output = {}
+            # Synthesize Final LLM Prompt (Text Mode Reduce)
             prompt_template = PromptManager.get_prompt("Employee Expense Claim")
             if not prompt_template:
                 prompt_template = (
-                    "You are a Travel Compliance & Audit Officer reviewing employee travel claims. "
-                    "Analyze claim data, policy violations, and document receipts. "
-                    "Return JSON with keys: compliance_rating (Compliant, Requires Clarification, Non-Compliant, High Risk), "
-                    "risk_level (Low, Medium, High), policy_violations (list of strings), audit_findings (list of strings), "
-                    "document_verification (summary string)."
+                    "You are the final reasoning layer of an Employee Expense Claim audit system.\n"
+                    "The system has already performed deterministic validation and attachment extraction.\n"
+                    "You must evaluate the entire claim thoroughly across all phases, even if certain documents are missing.\n\n"
+                    "AUDIT INSTRUCTIONS:\n"
+                    "1. Review the Audit Fact Sheet thoroughly.\n"
+                    "2. Explicitly report what documents/evidence were MISSING and what documents/evidence were PRESENT.\n"
+                    "3. For all PRESENT documents and data, evaluate whether the present data is ACCURATE or INACCURATE/CONFLICTING against the claim fields (dates, amounts, odometer readings, vehicle details).\n"
+                    "4. Review the individual Document Audit Scores assigned to each attached document.\n"
+                    "5. Synthesize deterministic findings and policy rules into an objective verdict.\n"
+                    "6. Recommend APPROVE, QUERY, REJECT, or ESCALATE:\n"
+                    "   - If required documents are missing or major data discrepancies exist, you MUST NOT recommend APPROVE.\n"
+                    "   - If missing documents can be queried from the employee, recommend QUERY or REJECT with specific reasons.\n"
+                    "   - Only recommend APPROVE if all required documents are present and data is verified accurate.\n\n"
+                    "Return strict JSON:\n"
+                    "{\n"
+                    '  "overall_status": "Compliant | Partially Compliant | Non-Compliant | High-Risk Review Required",\n'
+                    '  "risk_level": "Low | Medium | High",\n'
+                    '  "recommendation": "APPROVE | QUERY | REJECT | ESCALATE",\n'
+                    '  "missing_documents": [\n'
+                    '    {"document": "Requirement or Document Name", "reason": "Why it is missing or required"}\n'
+                    '  ],\n'
+                    '  "present_documents": [\n'
+                    '    {"document": "Document Name", "data_accurate": true, "accuracy_analysis": "Assessment of data accuracy"}\n'
+                    '  ],\n'
+                    '  "key_findings": ["..."],\n'
+                    '  "unresolved_issues": ["..."],\n'
+                    '  "executive_summary": "Comprehensive 2-4 sentence summary explaining what was missing, what was present, and whether present data was accurate."\n'
+                    "}"
                 )
+            
+            # Append Vision extractions ONLY if any exist
+            if extracted_items:
+                fact_sheet["vision_extractions"] = extracted_items
+                
+            synthesis_prompt = f"{prompt_template}\n\n## Audit Fact Sheet\n```json\n{json.dumps(fact_sheet, default=str, indent=2)}\n```"
 
-            extracted_claim_data = self._extract_expense_data(exp)
-            reduce_payload = {
-                "claim_data": extracted_claim_data,
-                "zero_token_policy_pre_check": pre_check_results,
-                "extracted_receipts_from_vision": extracted_receipts,
-            }
-
-            synthesis_prompt = f"{prompt_template}\n\n## Input Data Payload\n```json\n{json.dumps(reduce_payload, default=str, indent=2)}\n```"
-
-            print(f"[DEBUG EXPENSE] Executing Final Synthesis LLM Evaluation...")
+            print(f"[DEBUG EXPENSE] Phase 4 LLM Routing: Executing Final Synthesis LLM Evaluation...")
+            print(f"[DEBUG EXPENSE] ==================== LLM PROMPT ====================")
+            print(synthesis_prompt)
+            print(f"[DEBUG EXPENSE] ====================================================")
+            
             synthesis_res = self.gateway.call(prompt=synthesis_prompt)
             total_tokens += getattr(synthesis_res, "tokens_used", 0)
+
+            print(f"[DEBUG EXPENSE] =================== LLM RESPONSE ===================")
+            print(synthesis_res.content if synthesis_res.success else synthesis_res.error)
+            print(f"[DEBUG EXPENSE] ====================================================")
 
             audit_output = (
                 synthesis_res.content
                 if synthesis_res.success and isinstance(synthesis_res.content, dict)
-                else {
-                    "compliance_rating": (
-                        "Requires Clarification"
-                        if pre_check_results.get("violations")
-                        else "Compliant"
-                    ),
-                    "risk_level": (
-                        "High" if pre_check_results.get("violations") else "Low"
-                    ),
-                    "policy_violations": pre_check_results.get("violations", []),
-                    "audit_findings": pre_check_results.get("warnings", []),
-                    "document_verification": f"Extracted {len(extracted_receipts)} receipt entries from attachments.",
-                }
+                else self._build_deterministic_fallback_audit(
+                    fact_sheet=fact_sheet,
+                    error_msg=synthesis_res.error or "Unknown Error",
+                )
             )
+
+            # Store fact sheet in audit output so we can render deterministic detailed report
+            audit_output["_fact_sheet"] = fact_sheet
+
 
             latency_ms = (datetime.now() - start_time).total_seconds() * 1000.0
 
@@ -1577,7 +1841,7 @@ class ExpenseAnalyzer(BaseAnalyzer):
 
             return {
                 "status": "success",
-                "compliance_rating": audit_output.get("compliance_rating"),
+                "compliance_rating": audit_output.get("overall_status", audit_output.get("compliance_rating")),
                 "risk_level": audit_output.get("risk_level"),
                 "analysis": audit_output,
                 "tokens_used": total_tokens,
@@ -1662,56 +1926,731 @@ class ExpenseAnalyzer(BaseAnalyzer):
         # Child table travel_documents
         if hasattr(exp, "travel_documents"):
             for d in getattr(exp, "travel_documents", []):
-                if getattr(d, "attachment", None):
-                    urls.append(d.attachment)
+                file_url = getattr(d, "file", None) or getattr(d, "file_url", None) or getattr(d, "attachment", None)
+                if file_url:
+                    urls.append(file_url)
 
         return list(set(urls))
+
+    def _calculate_and_save_document_scores(
+        self,
+        exp,
+        structured_evidence: List[Dict],
+        validator,
+        audit_result: Dict,
+    ) -> List[Dict]:
+        """Calculates an audit compliance score (0-100) for each document attached in the child table
+        'travel_documents', updates the 'score' field on each child row in memory and in the database,
+        and returns a detailed score breakdown for the audit report.
+        """
+        doc_scores = []
+        travel_docs = getattr(exp, "travel_documents", []) or []
+
+        # Create lookups for structured evidence
+        ev_by_url = {}
+        for ev in structured_evidence:
+            url = ev.get("source_attachment", "")
+            if url:
+                ev_by_url[url] = ev
+                ev_by_url[os.path.basename(url)] = ev
+                ev_by_url[url.strip().lower()] = ev
+                ev_by_url[os.path.basename(url).strip().lower()] = ev
+
+        findings = audit_result.get("findings", [])
+
+        for d in travel_docs:
+            doc_type = str(getattr(d, "document", "") or "Other").strip()
+            file_url = getattr(d, "file", None) or getattr(d, "file_url", None) or getattr(d, "attachment", None) or ""
+            row_name = getattr(d, "name", None)
+
+            # 1. No file attached to row
+            if not file_url:
+                score = 0
+                status = "FAIL"
+                accuracy = "Missing Document"
+                notes = "Document row listed but no file attached."
+                doc_scores.append({
+                    "row_name": row_name,
+                    "document": doc_type,
+                    "file": "None",
+                    "score": 0,
+                    "status": status,
+                    "accuracy": accuracy,
+                    "notes": notes,
+                })
+                if hasattr(d, "score"):
+                    d.score = 0
+                if row_name:
+                    try:
+                        frappe.db.set_value(
+                            "Travel Claim Documents Table",
+                            row_name,
+                            "score",
+                            0,
+                            update_modified=False,
+                        )
+                    except Exception as e:
+                        frappe.log_error(f"Error setting doc score: {e}")
+                continue
+
+            # 2. Match structured evidence
+            ev = (
+                ev_by_url.get(file_url)
+                or ev_by_url.get(os.path.basename(file_url))
+                or ev_by_url.get(file_url.strip().lower())
+                or ev_by_url.get(os.path.basename(file_url).strip().lower())
+            )
+
+            score = 100
+            deductions = []
+            verified_points = []
+            ev_type = ev.get("document_type", "") if ev else ""
+
+            if not ev:
+                score = 20
+                status = "FAIL"
+                accuracy = "Unreadable / Inaccessible"
+                notes = "Attached file could not be read or extracted."
+            else:
+                fields = {f["field"]: f for f in ev.get("extracted_fields", [])}
+                raw_text = ev.get("extracted_text_content", "")
+
+                # Travel Report
+                if doc_type in ["Travel Report", "Daily Travel Log"] or ev_type == "TRAVEL_REPORT":
+                    start_odo = fields.get("start_odometer") or fields.get("start_odometer_image") or fields.get("start_odometer_text")
+                    end_odo = fields.get("end_odometer") or fields.get("end_odometer_image") or fields.get("end_odometer_text")
+
+                    # If not in this single ev, check across structured_evidence for TRAVEL_REPORT
+                    if not start_odo:
+                        for any_ev in structured_evidence:
+                            if any_ev.get("document_type") == "TRAVEL_REPORT":
+                                start_odo = next((f for f in any_ev.get("extracted_fields", []) if f["field"] in ["start_odometer", "start_odometer_image"]), None)
+                                if start_odo:
+                                    break
+
+                    if not end_odo:
+                        for any_ev in structured_evidence:
+                            if any_ev.get("document_type") == "TRAVEL_REPORT":
+                                end_odo = next((f for f in any_ev.get("extracted_fields", []) if f["field"] in ["end_odometer", "end_odometer_image"]), None)
+                                if end_odo:
+                                    break
+
+                    if start_odo and start_odo.get("status") in ["EXTRACTED", "VERIFIED"] and start_odo.get("value") is not None:
+                        verified_points.append(f"Start odometer ({start_odo.get('value')}) verified")
+                    else:
+                        score -= 25
+                        deductions.append("Missing start odometer (-25)")
+
+                    if end_odo and end_odo.get("status") in ["EXTRACTED", "VERIFIED"] and end_odo.get("value") is not None:
+                        verified_points.append(f"End odometer ({end_odo.get('value')}) verified")
+                    else:
+                        score -= 25
+                        deductions.append("Missing end odometer (-25)")
+
+                    # Check for Odometer Mismatch Finding
+                    for f in findings:
+                        if f.get("rule") == "ODOMETER_TEXT_IMAGE_MISMATCH":
+                            score -= 20
+                            deductions.append("Report odometer text differs from photo (-20)")
+                            break
+                        if f.get("rule") == "KM_MISMATCH_OVERCLAIM":
+                            score -= 25
+                            deductions.append("Claimed distance exceeds odometer distance (-25)")
+                            break
+
+                    # Check Vehicle Photo
+                    veh_photo = fields.get("vehicle_photo")
+                    if not veh_photo:
+                        for any_ev in structured_evidence:
+                            if any_ev.get("document_type") == "TRAVEL_REPORT":
+                                veh_photo = next((f for f in any_ev.get("extracted_fields", []) if f["field"] == "vehicle_photo"), None)
+                                if veh_photo:
+                                    break
+
+                    if exp.mode_of_travel in ["Personal Vehicle", "Rented Vehicle"]:
+                        if veh_photo and veh_photo.get("status") == "VERIFIED":
+                            verified_points.append("Vehicle photo verified")
+                        else:
+                            score -= 15
+                            deductions.append("Missing vehicle photo (-15)")
+
+                        for f in findings:
+                            if f.get("rule") == "VEHICLE_PLATE_MISMATCH":
+                                score -= 20
+                                deductions.append("Vehicle license plate mismatch (-20)")
+                                break
+
+                # Travel Authorization
+                elif doc_type in ["Travel Authorization", "Approval Email"] or ev_type == "TRAVEL_AUTHORIZATION":
+                    if validator.travel_auth and validator.travel_auth.get("status") == "PASS":
+                        verified_points.append("Approved Travel Authorization verified")
+                    else:
+                        score -= 30
+                        deductions.append("Travel Authorization missing or unapproved (-30)")
+
+                    for f in findings:
+                        if f.get("rule") in ["DATE_MISMATCH_START", "DATE_MISMATCH_END"]:
+                            score -= 20
+                            deductions.append("Travel dates conflict with authorization (-20)")
+                            break
+
+                # Supporting Bills / Receipts / Invoices / Tickets
+                elif doc_type in ["Supporting Bills", "Expense Claim"] or ev_type in ["VENDOR_INVOICE", "TOLL_RECEIPT", "FUEL_RECEIPT", "TICKET"]:
+                    amt = fields.get("amount")
+                    if amt and amt.get("status") in ["EXTRACTED", "VERIFIED"] and amt.get("value") is not None:
+                        verified_points.append(f"Total amount (PKR {amt.get('value')}) verified")
+                    else:
+                        score -= 30
+                        deductions.append("Receipt total amount could not be extracted (-30)")
+
+                    inv_date = fields.get("date") or fields.get("invoice_date")
+                    if inv_date and inv_date.get("value"):
+                        exp_from = getdate(exp.from_date) if exp.from_date else None
+                        exp_to = getdate(exp.to_date) if exp.to_date else None
+                        try:
+                            d_val = getdate(inv_date.get("value"))
+                            if (exp_from and d_val < exp_from) or (exp_to and d_val > exp_to):
+                                score -= 25
+                                deductions.append(f"Receipt date ({d_val}) is outside travel period (-25)")
+                            else:
+                                verified_points.append(f"Receipt date ({d_val}) matches travel period")
+                        except Exception:
+                            pass
+
+                # Other / General
+                else:
+                    if len(raw_text.strip()) > 30 or fields:
+                        verified_points.append("Document content verified")
+                    else:
+                        score -= 25
+                        deductions.append("Insufficient or unverified document content (-25)")
+
+                # Deduct if duplicate file detected
+                for f in findings:
+                    if f.get("rule") == "DUPLICATE_EVIDENCE" and file_url in f.get("evidence", []):
+                        score -= 25
+                        deductions.append("Duplicate attachment detected (-25)")
+                        break
+
+                score = max(0, min(100, score))
+                status = "PASS" if score >= 80 else ("PARTIAL" if score >= 50 else "FAIL")
+                accuracy = "Accurate" if score >= 80 else ("Partially Accurate" if score >= 50 else "Inaccurate / Non-compliant")
+
+                notes_parts = []
+                if verified_points:
+                    notes_parts.append("; ".join(verified_points))
+                if deductions:
+                    notes_parts.append("Deductions: " + "; ".join(deductions))
+                notes = " | ".join(notes_parts) if notes_parts else "Document verified."
+
+            doc_scores.append({
+                "row_name": row_name,
+                "document": doc_type,
+                "file": file_url,
+                "score": score,
+                "status": status,
+                "accuracy": accuracy,
+                "notes": notes,
+            })
+
+            # Save to child row in memory and in DB
+            if hasattr(d, "score"):
+                d.score = score
+            if row_name:
+                try:
+                    frappe.db.set_value(
+                        "Travel Claim Documents Table",
+                        row_name,
+                        "score",
+                        score,
+                        update_modified=False,
+                    )
+                except Exception as e:
+                    frappe.log_error(f"Error setting doc score: {e}")
+
+        return doc_scores
+
+    def _build_deterministic_fallback_audit(
+        self, fact_sheet: Dict, error_msg: str = ""
+    ) -> Dict:
+        missing_list = fact_sheet.get("missing_evidence", [])
+        det_findings = fact_sheet.get("deterministic_findings", [])
+        final_score = fact_sheet.get("scoring", {}).get("final_score", 100)
+        ambiguities = fact_sheet.get("ambiguities", [])
+
+        # Determine overall status, risk, and recommendation from deterministic facts
+        if missing_list or final_score < 50:
+            overall_status = "Non-Compliant"
+            risk_level = "High"
+            recommendation = "REJECT" if final_score < 40 else "QUERY"
+        elif det_findings or final_score < 80 or ambiguities:
+            overall_status = "Partially Compliant"
+            risk_level = "Medium"
+            recommendation = "QUERY"
+        else:
+            overall_status = "Compliant"
+            risk_level = "Low"
+            recommendation = "APPROVE"
+
+        # Synthesize policy violations / breaches directly from deterministic gaps
+        violations = []
+        for m in missing_list:
+            req = m.get("requirement", "Document")
+            reason = m.get("reason", "Required by policy")
+            violations.append(f"Missing mandatory evidence: {req} - {reason}")
+        for f in det_findings:
+            desc = f.get("description")
+            if desc and desc not in violations:
+                violations.append(desc)
+        for a in ambiguities:
+            violations.append(f"Data ambiguity on {a.get('field')}: {a.get('reason')}")
+
+        # Synthesize required actions for employee / approver
+        actions = []
+        for m in missing_list:
+            actions.append(f"Provide missing documentation for: {m.get('requirement')}.")
+        for f in det_findings:
+            desc = f.get("description", "")
+            if "missing" in desc.lower():
+                actions.append(f"Submit required documentation/data: {desc}")
+            else:
+                actions.append(f"Resolve policy discrepancy: {desc}")
+        for a in ambiguities:
+            actions.append(f"Clarify conflicting data for {a.get('field')}.")
+
+        if not actions and violations:
+            actions.append("Resolve the flagged policy discrepancies before re-submitting for approval.")
+
+        # Build narrative executive summary
+        summary_parts = []
+        if error_msg:
+            summary_parts.append(f"AI synthesis unavailable ({error_msg}); claim evaluated via deterministic audit engine.")
+        else:
+            summary_parts.append("Claim evaluated via deterministic audit engine.")
+
+        summary_parts.append(
+            f"The claim received an audit score of {final_score}/100 and was rated as {overall_status} "
+            f"(Risk: {risk_level}, Recommendation: {recommendation})."
+        )
+
+        if missing_list:
+            missing_names = ", ".join([m.get("requirement", "Document") for m in missing_list[:3]])
+            if len(missing_list) > 3:
+                missing_names += f" and {len(missing_list) - 3} other(s)"
+            summary_parts.append(f"Mandatory evidence missing: {missing_names}.")
+
+        if det_findings:
+            top_findings = "; ".join([f.get("description", "") for f in det_findings[:2]])
+            summary_parts.append(f"Policy findings identified: {top_findings}.")
+
+        if overall_status == "Compliant":
+            summary_parts.append("All attached documents and readings verified compliant.")
+        else:
+            summary_parts.append("Mandatory documentation and policy discrepancies must be rectified prior to approval.")
+
+        exec_summary = " ".join(summary_parts)
+
+        return {
+            "overall_status": overall_status,
+            "compliance_rating": overall_status,
+            "risk_level": risk_level,
+            "recommendation": recommendation,
+            "key_findings": actions or ["No further actions required."],
+            "required_actions": actions,
+            "policy_violations": violations,
+            "ai_findings": violations,
+            "unresolved_issues": violations,
+            "audit_findings": actions,
+            "executive_summary": exec_summary,
+        }
 
     def _update_document_audit_fields(
         self, exp, audit_output: Dict, tokens_used: int, latency_ms: float
     ):
-        rating = audit_output.get("compliance_rating", "Compliant")
-        risk = audit_output.get("risk_level", "Low")
-        violations = audit_output.get("policy_violations", [])
-        findings = audit_output.get("audit_findings", [])
-        doc_ver = audit_output.get("document_verification", "")
+        # =====================================================================
+        # Word / PDF document-style audit report (formal, print-friendly)
+        # =====================================================================
 
-        # Color badges for HTML Card
-        color = (
-            "#10b981"
-            if rating == "Compliant"
-            else ("#f59e0b" if rating == "Requires Clarification" else "#ef4444")
+        # --- Shared Word-style constants ---
+        SEC_H = ('font-size: 13pt; font-weight: bold; margin: 18px 0 6px 0; '
+                'color: #1F3864; border-bottom: 1px solid #BFBFBF; ')
+        TH = ('border: 1px solid #404040; padding: 5px 8px; text-align: left; '
+            'background-color: #D9D9D9; font-weight: bold;')
+        TD = 'border: 1px solid #404040; padding: 5px; vertical-align: top;'
+        TBL = 'width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 10.5pt;'
+
+        def _badge(status):
+            """Color-code PASS/FAIL like Word's conditional formatting."""
+            s = str(status).upper()
+            if s.startswith("PASS"):
+                return f'<span style="color:#006100;font-weight:bold;">{status}</span>'
+            if s.startswith("FAIL"):
+                return f'<span style="color:#9C0006;font-weight:bold;">{status}</span>'
+            return f"<strong>{status}</strong>"
+
+        def _score(score):
+            """Color-code score: red < 50, amber < 80, green >= 80."""
+            try:
+                v = float(score)
+            except (TypeError, ValueError):
+                return f"<strong>{score} / 100</strong>"
+            color = "#9C0006" if v < 50 else ("#9C6500" if v < 80 else "#006100")
+            return f'<span style="color:{color};font-weight:bold;">{score} / 100</span>'
+
+        fact_sheet = audit_output.get("_fact_sheet", {})
+        missing_list = fact_sheet.get("missing_evidence", []) if fact_sheet else []
+        det_f = fact_sheet.get("deterministic_findings", []) if fact_sheet else []
+        final_score = fact_sheet.get("scoring", {}).get("final_score", 100) if fact_sheet else 100
+
+        # ---- Map Phase 4 schema to standard fields ----
+        rating = audit_output.get("overall_status", audit_output.get("compliance_rating", "Compliant"))
+        risk = audit_output.get("risk_level", "Low")
+        recommendation = audit_output.get("recommendation", "")
+
+        # Grounding check: never let a claim with missing evidence or score < 70 be rated Compliant
+        if (missing_list or final_score < 70) and rating == "Compliant":
+            rating = "Non-Compliant" if final_score < 50 else "Partially Compliant"
+            risk = "High" if final_score < 50 else "Medium"
+            if recommendation == "APPROVE" or not recommendation:
+                recommendation = "REJECT" if final_score < 50 else "QUERY"
+
+        # Map 'overall_status' back to Frappe standard 'compliance_rating' options if needed
+        if rating == "High-Risk Review Required":
+            rating = "High Risk"
+
+        # Collect violations from all potential keys
+        raw_violations = (
+            audit_output.get("policy_violations")
+            or audit_output.get("ai_findings")
+            or audit_output.get("unresolved_issues")
+            or []
         )
+        if isinstance(raw_violations, str):
+            violations = [raw_violations]
+        else:
+            violations = list(raw_violations)
+
+        # Collect findings/actions from all potential keys
+        raw_findings = (
+            audit_output.get("required_actions")
+            or audit_output.get("audit_findings")
+            or audit_output.get("key_findings")
+            or []
+        )
+        if isinstance(raw_findings, str):
+            findings = [raw_findings]
+        else:
+            findings = list(raw_findings)
+
+        # SYNCHRONIZE WITH DETERMINISTIC GROUND TRUTH:
+        # Build deterministic violations and required actions from missing items and findings
+        deterministic_violations = []
+        for m in missing_list:
+            deterministic_violations.append(
+                f"Missing mandatory evidence: {m.get('requirement', 'Document')} - {m.get('reason', 'Required by policy')}"
+            )
+        for f in det_f:
+            desc = f.get("description")
+            if desc and desc not in deterministic_violations:
+                deterministic_violations.append(desc)
+
+        if not violations and deterministic_violations:
+            violations = list(deterministic_violations)
+        elif deterministic_violations:
+            for dv in deterministic_violations:
+                if not any(dv.lower() in str(v).lower() for v in violations):
+                    violations.append(dv)
+
+        # If findings is empty or only has generic failure message, derive actionable next steps
+        if not findings or all("synthesis failed" in str(f).lower() or "no active api" in str(f).lower() for f in findings):
+            findings = []
+            for m in missing_list:
+                findings.append(f"Provide missing required documentation for: {m.get('requirement', '')}.")
+            for f in det_f:
+                findings.append(f"Resolve policy discrepancy: {f.get('description', '')}.")
+
+        # Narrative Executive Summary Grounding:
+        doc_ver = audit_output.get("executive_summary", audit_output.get("explanation", audit_output.get("document_verification", "")))
+        if not doc_ver or "system encountered an error" in str(doc_ver).lower() or "no active api" in str(doc_ver).lower():
+            err_ctx = " (AI synthesis offline)" if ("error" in str(doc_ver).lower() or "api" in str(doc_ver).lower()) else ""
+            summary_parts = [
+                f"Deterministic audit completed with score {final_score}/100. Verdict: {rating} "
+                f"(Risk: {risk}, Recommendation: {recommendation}){err_ctx}."
+            ]
+            if missing_list:
+                missing_names = ", ".join([m.get("requirement", "Document") for m in missing_list[:3]])
+                if len(missing_list) > 3:
+                    missing_names += f" and {len(missing_list) - 3} other(s)"
+                summary_parts.append(f"Detected {len(missing_list)} missing required evidence item(s) ({missing_names}).")
+            if det_f:
+                summary_parts.append(f"Flagged {len(det_f)} policy exception(s).")
+            if rating == "Compliant" and not missing_list:
+                summary_parts.append("All attached documents and readings verified compliant.")
+            else:
+                summary_parts.append("Mandatory documentation and policy discrepancies must be rectified prior to approval.")
+            doc_ver = " ".join(summary_parts)
 
         violations_html = (
-            "".join([f"<li>{v}</li>" for v in violations])
+            "".join([f"<li style='margin-bottom: 4px;'>{v}</li>" for v in violations])
             if violations
-            else "<li>No critical policy violations detected.</li>"
+            else "<li style='margin-bottom: 4px;'>No critical policy breaches detected.</li>"
         )
         findings_html = (
-            "".join([f"<li>{f}</li>" for f in findings])
+            "".join([f"<li style='margin-bottom: 4px;'>{f}</li>" for f in findings])
             if findings
-            else "<li>All travel claim rows match SOP rules.</li>"
+            else "<li style='margin-bottom: 4px;'>No further actions required.</li>"
         )
 
-        html_card = f"""
-        <div style="border: 1px solid #d1d5db; border-radius: 8px; padding: 15px; background: #ffffff; font-family: sans-serif;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <h4 style="margin: 0; color: #111827;">AI Compliance Audit Result</h4>
-                <span style="background-color: {color}; color: white; padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 12px;">
-                    {rating.upper()}
-                </span>
+        doc_scores_html = ""
+        checklist_html = ""
+        ambiguities_html = ""
+        claim_html = ""
+        m_items = "<li style='margin-bottom: 4px;'>All required documents and evidence were submitted.</li>"
+        p_items = "<li style='margin-bottom: 4px;'>No documents attached.</li>"
+        deterministic_items = "<li style='margin-bottom: 4px;'>No deterministic anomalies detected.</li>"
+
+        if fact_sheet:
+            # 1. Travel Document Scores Table
+            doc_scores = fact_sheet.get("document_scores", [])
+            if doc_scores:
+                doc_scores_rows = ""
+                for ds in doc_scores:
+                    file_display = ds.get("file", "")
+                    if file_display and file_display != "None":
+                        file_display = (
+                            f"<a href='{file_display}' target='_blank' "
+                            f"style='color:#1F3864;text-decoration:underline;'>"
+                            f"{os.path.basename(file_display)}</a>"
+                        )
+                    else:
+                        file_display = "None"
+                    doc_scores_rows += f"""
+                    <tr>
+                        <td style="{TD}"><strong>{ds.get('document', '')}</strong></td>
+                        <td style="{TD}">{file_display}</td>
+                        <td style="{TD}">{_score(ds.get('score', 0))}</td>
+                        <td style="{TD}">{ds.get('accuracy', '')}</td>
+                        <td style="{TD}">{ds.get('notes', '')}</td>
+                    </tr>"""
+                doc_scores_html = f"""
+                <h4 style="{SEC_H}">4. Travel Document Scores</h4>
+                <table style="{TBL}">
+                    <thead>
+                        <tr>
+                            <th style="{TH}">Document Type</th>
+                            <th style="{TH}">Attached File</th>
+                            <th style="{TH}">Score</th>
+                            <th style="{TH}">Data Accuracy</th>
+                            <th style="{TH}">Verification Details &amp; Deductions</th>
+                        </tr>
+                    </thead>
+                    <tbody>{doc_scores_rows}</tbody>
+                </table>"""
+
+            # 2. Missing vs Present Documents Analysis
+            missing_list = fact_sheet.get("missing_evidence", [])
+            if missing_list:
+                m_items = "".join([
+                    f"<li style='margin-bottom: 4px;'><strong>{m.get('requirement', '')}</strong>: {m.get('reason', '')}</li>"
+                    for m in missing_list
+                ])
+
+            present_list = fact_sheet.get("present_evidence", [])
+            if present_list:
+                p_items = ""
+                for p in present_list:
+                    doc_t = p.get("document_type", "Document")
+                    url_b = os.path.basename(p.get("url", "")) or p.get("url", "")
+                    fields_str = []
+                    for f in p.get("fields", []):
+                        f_name = str(f.get("field", "")).replace("_", " ").title()
+                        f_val = f.get("value")
+                        f_st = f.get("status", "")
+                        fields_str.append(f"{f_name}: <strong>{f_val}</strong> ({f_st})")
+                    fields_text = " | ".join(fields_str) if fields_str else "Document attached and extracted."
+                    p_items += f"<li style='margin-bottom: 4px;'><strong>{doc_t}</strong> ({url_b}): {fields_text}</li>"
+
+            # 3. Evidence Checklist
+            checklist_rows = ""
+            for item in fact_sheet.get("evidence_matrix", []):
+                st = item.get("status", "FAIL")
+                checklist_rows += f"""
+                <tr>
+                    <td style="{TD}">{item.get('requirement', '')}</td>
+                    <td style="{TD}">{_badge(st)}</td>
+                    <td style="{TD}">{item.get('reason', '')}</td>
+                </tr>"""
+            if checklist_rows:
+                checklist_html = f"""
+                <h4 style="{SEC_H}">6. Policy Checklist Results</h4>
+                <table style="{TBL}">
+                    <thead>
+                        <tr>
+                            <th style="{TH}">Requirement</th>
+                            <th style="{TH}">Status</th>
+                            <th style="{TH}">Notes</th>
+                        </tr>
+                    </thead>
+                    <tbody>{checklist_rows}</tbody>
+                </table>"""
+
+            # 4. Deterministic Findings
+            det_f = fact_sheet.get("deterministic_findings", [])
+            if det_f:
+                deterministic_items = "".join([
+                    f"<li style='margin-bottom: 4px;'>{f.get('description')}</li>" for f in det_f
+                ])
+
+            # 5. Ambiguities
+            ambiguities_list = fact_sheet.get("ambiguities", [])
+            if ambiguities_list:
+                amb_rows = ""
+                for a in ambiguities_list:
+                    amb_rows += f"""
+                    <tr>
+                        <td style="{TD}">{a.get('field', '')}</td>
+                        <td style="{TD}">{a.get('value', '')}</td>
+                        <td style="{TD}" >{a.get('source', '')}</td>
+                        <td style="{TD}">{a.get('reason', '')}</td>
+                    </tr>"""
+                ambiguities_html = f"""
+                <h4 style="{SEC_H}">8. Ambiguities &amp; Discrepancies</h4>
+                <table style="{TBL}">
+                    <thead>
+                        <tr>
+                            <th style="{TH}">Field</th>
+                            <th style="{TH}">Value</th>
+                            <th style="{TH}">Source</th>
+                            <th style="{TH}">Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody>{amb_rows}</tbody>
+                </table>"""
+            else:
+                ambiguities_html = f"""
+                <h4 style="{SEC_H}">8. Ambiguities &amp; Discrepancies</h4>
+                <p style="margin: 0 0 14px 0; text-align: justify;">No ambiguities or data conflicts detected.</p>"""
+
+            # 6. Claim Overview
+            claim_data = fact_sheet.get('claim', {})
+            if claim_data:
+                claim_rows = ""
+                for k, v in claim_data.items():
+                    formatted_key = str(k).replace('_', ' ').title()
+                    val = "Not Provided" if v is None else str(v)
+                    claim_rows += f"""
+                    <tr>
+                        <td style="{TD}; width: 30%;"><strong>{formatted_key}</strong></td>
+                        <td style="{TD}">{val}</td>
+                    </tr>"""
+                claim_html = f"""
+                <h4 style="{SEC_H}">9. Claim Overview</h4>
+                <table style="{TBL}">
+                    <thead>
+                        <tr>
+                            <th style="{TH}">Property</th>
+                            <th style="{TH}">Value</th>
+                        </tr>
+                    </thead>
+                    <tbody>{claim_rows}</tbody>
+                </table>"""
+
+        # ---- Missing-documents notice (Word callout box, not a UI card) ----
+        missing_list = fact_sheet.get("missing_evidence", []) if fact_sheet else []
+        missing_note = ""
+        if missing_list:
+            missing_note = f"""
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 14px;">
+                <tr>
+                    <td style="border: 1px solid #C00000; padding: 8px 12px; color: #9C0006; font-size: 10.5pt;">
+                        <strong>Notice ({len(missing_list)} Missing Requirement(s)):</strong>
+                        One or more required documents were not attached. See Section 5 for details.
+                    </td>
+                </tr>
+            </table>"""
+
+        # ---- Document header: label/value table (Word-style title block) ----
+        rec_row = ""
+        if recommendation:
+            rec_row = (
+                '<tr><td style="padding: 2px 0; width: 140px;">'
+                '<strong>Recommendation:</strong></td>'
+                f'<td style="padding: 2px 0;">{recommendation}</td></tr>'
+            )
+        report_date = str(now())[:16]
+
+        summary_doc = f"""
+        <div style="font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 11pt;
+                    line-height: 1.5; color: #000000; padding: 24px 8px;
+                    max-width: 800px; margin: 0 auto; text-align: left !important;">
+
+            <!-- Document Header -->
+            <div style="border-bottom: 3px double #000000; padding-bottom: 10px; margin-bottom: 20px;">
+                <h2 style="margin: 0 0 10px 0; font-size: 20pt; font-weight: bold; color: #1F3864;
+                        letter-spacing: 0.3px; text-transform: uppercase;
+                        font-family: 'Calibri Light', 'Segoe UI', Arial, sans-serif;">
+                    Employee Expense Claim Audit Report
+                </h2>
+                <table style="width: 100%; border-collapse: collapse; font-size: 10.5pt; color: #333333;">
+                    <tr>
+                        <td style="padding: 2px; width: 140px;"><strong>Compliance Rating:</strong></td>
+                        <td style="padding: 2px;">{rating}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 2px;"><strong>Risk Level:</strong></td>
+                        <td style="padding: 2px;">{risk}</td>
+                    </tr>
+                    {rec_row}
+                </table>
             </div>
-            <hr style="border-top: 1px solid #e5e7eb; margin: 10px 0;"/>
-            <p style="margin: 5px 0;"><b>Risk Level:</b> <span style="font-weight: bold; color: {color};">{risk}</span></p>
-            <p style="margin: 5px 0; color: #dc2626;"><b>Policy Breaches / Violations:</b></p>
-            <ul style="color: #dc2626; margin: 5px 0; padding-left: 20px;">{violations_html}</ul>
-            <p style="margin: 5px 0; color: #374151;"><b>Audit Findings:</b></p>
-            <ul style="color: #374151; margin: 5px 0; padding-left: 20px;">{findings_html}</ul>
-            <p style="margin: 5px 0; color: #4b5563;"><b>Document Verification:</b> {doc_ver}</p>
+
+            {missing_note}
+
+            <h4 style="{SEC_H}">1. Executive Summary</h4>
+            <p style="margin: 0 0 14px 0; text-align: justify;">{doc_ver}</p>
+
+            <h4 style="{SEC_H}">2. Policy Breaches &amp; Violations</h4>
+            <ul style="margin: 0 0 14px 0; padding-left: 28px; text-align: justify;">
+                {violations_html}
+            </ul>
+
+            <h4 style="{SEC_H}">3. Audit Findings &amp; Required Actions</h4>
+            <ul style="margin: 0 0 14px 0; padding-left: 28px; text-align: justify;">
+                {findings_html}
+            </ul>
+
+            {doc_scores_html}
+
+            <h4 style="{SEC_H}">5. Document Completeness &amp; Data Verification</h4>
+            <p style="margin: 0 0 4px 0;"><strong>Missing Documents:</strong></p>
+            <ul style="margin: 0 0 10px 0; padding-left: 28px;">
+                {m_items}
+            </ul>
+            <p style="margin: 0 0 4px 0;"><strong>Present Documents &amp; Extracted Data:</strong></p>
+            <ul style="margin: 0 0 14px 0; padding-left: 28px;">
+                {p_items}
+            </ul>
+
+            {checklist_html}
+
+            <h4 style="{SEC_H}">7. Deterministic System Findings</h4>
+            <ul style="margin: 0 0 14px 0; padding-left: 28px; text-align: justify;">
+                {deterministic_items}
+            </ul>
+
+            {ambiguities_html}
+
+            {claim_html}
+
+            <!-- Document Footer -->
+            <div style="border-top: 1px solid #BFBFBF; margin-top: 28px; padding-top: 8px;
+                        font-size: 9pt; color: #595959; text-align: center;">
+                Employee Expense Claim Audit Report &mdash; Generated {report_date} &mdash; Confidential
+            </div>
         </div>
         """
 
+        # ---- Field updates (unchanged) ----
         updates = {}
         if hasattr(exp, "ai_audit_status"):
             updates["ai_audit_status"] = "Completed"
@@ -1726,9 +2665,9 @@ class ExpenseAnalyzer(BaseAnalyzer):
         if hasattr(exp, "audit_completed_on"):
             updates["audit_completed_on"] = now()
         if hasattr(exp, "audit_summary"):
-            updates["audit_summary"] = html_card
+            updates["audit_summary"] = summary_doc
         if hasattr(exp, "raw_audit_json"):
-            updates["raw_audit_json"] = json.dumps(audit_output, indent=2)
+            updates["raw_audit_json"] = json.dumps(audit_output, indent=2, default=str)
 
         if updates:
             exp.db_set(updates)
@@ -1925,7 +2864,10 @@ class SchoolDataExtractor(BaseAnalyzer):
         return None
 
     def _process_pdf(self, file_url: str) -> List[str]:
-        file_doc = frappe.get_doc("File", {"file_url": file_url})
+        file_name = frappe.db.get_value("File", {"file_url": file_url}, "name")
+        if not file_name:
+            return []
+        file_doc = frappe.get_doc("File", file_name)
         file_path = file_doc.get_full_path()
 
         with open(file_path, "rb") as f:
@@ -2485,17 +3427,15 @@ def process_expense_claim_async(docname: str):
     try:
         res = _expense_analyzer.analyze(docname)
         # Notify user UI dynamically
-        doc_owner = frappe.db.get_value("Employee Expense Claim", docname, "owner")
-        if doc_owner:
-            frappe.publish_realtime(
-                event="expense_claim_ai_completed",
-                message={
-                    "docname": docname,
-                    "status": res.get("compliance_rating", "Completed"),
-                    "risk_level": res.get("risk_level", "Low"),
-                },
-                user=doc_owner,
-            )
+        frappe.publish_realtime(
+            event="expense_claim_ai_completed",
+            message={
+                "docname": docname,
+                "status": res.get("compliance_rating", "Completed"),
+                "risk_level": res.get("risk_level", "Low"),
+            },
+            after_commit=True,
+        )
     except Exception as e:
         get_logger("process_expense_claim_async").error(
             f"Async worker failed for {docname}: {e}"
@@ -2506,16 +3446,18 @@ def process_expense_claim_async(docname: str):
 
 
 @frappe.whitelist()
-def analyze_expense(name=None):
+def analyze_expense(name=None, sync=True):
     if not name:
         return {"status": "failed", "error": "Employee Expense Claim name is required"}
 
+    if sync:
+        return _expense_analyzer.analyze(name)
     return trigger_expense_claim_analysis(name=name)
 
 
 @frappe.whitelist()
-def expense_analysis(name=None):
-    return analyze_expense(name=name)
+def expense_analysis(name=None, sync=True):
+    return analyze_expense(name=name, sync=sync)
 
 
 @frappe.whitelist()

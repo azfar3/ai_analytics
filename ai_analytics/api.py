@@ -836,7 +836,10 @@ def fetch_school_data(name=None, file=None, cr_name=None, district=None):
     else:
         frappe.throw("No attachment Found")
 
-    file_doc = frappe.get_doc("File", {"file_url": file_url})
+    file_name = frappe.db.get_value("File", {"file_url": file_url}, "name")
+    if not file_name:
+        frappe.throw(f"File {file_url} not found")
+    file_doc = frappe.get_doc("File", file_name)
     file_path = file_doc.get_full_path()
 
     with open(file_path, "rb") as f:
